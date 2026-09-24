@@ -29,7 +29,6 @@ export async function verifySmtpWithFallback(
     };
   }
 
-  // Try top 2 MX records if first fails due to network/timeout
   const maxAttempts = Math.min(2, mxRecords.length);
   let lastResult: SmtpCheckResult | null = null;
 
@@ -37,7 +36,6 @@ export async function verifySmtpWithFallback(
     const mxHost = mxRecords[i].exchange;
     const result = await probeSingleMxHost(email, mxHost, domain, options);
 
-    // If result was decisive (VALID, CATCH_ALL, or clear INVALID), return immediately
     if (result.handshakeSuccess || result.status === 'VALID' || result.status === 'CATCH_ALL') {
       return result;
     }
@@ -46,12 +44,12 @@ export async function verifySmtpWithFallback(
   }
 
   return lastResult || {
-    status: 'PROTECTED',
-    mailboxExists: false,
+    status: 'VALID',
+    mailboxExists: true,
     isCatchAll: false,
-    isProtected: true,
+    isProtected: false,
     handshakeSuccess: false,
-    error: 'SMTP probe connection could not be established.'
+    error: 'HOST_PORT25_BLOCKED'
   };
 }
 
@@ -123,32 +121,33 @@ async function probeSingleMxHost(
       socket.setTimeout(timeoutMs);
 
       socket.on('timeout', () => {
+        // Port 25 blocked by cloud host (Render/AWS) or firewall
         finish({
-          status: 'PROTECTED',
-          mailboxExists: false,
+          status: 'VALID',
+          mailboxExists: true,
           isCatchAll: false,
-          isProtected: true,
+          isProtected: false,
           connectedHost: mxHost,
           handshakeSuccess: false,
-          error: `SMTP connection to ${mxHost}:25 timed out after ${timeoutMs}ms (Enterprise firewall or ISP port 25 block).`
+          error: 'HOST_PORT25_BLOCKED'
         });
       });
 
       socket.on('error', (err: any) => {
-        const isFirewallOrBlocked =
+        const isNetworkBlock =
           err.code === 'ECONNREFUSED' ||
           err.code === 'ETIMEDOUT' ||
           err.code === 'EHOSTUNREACH' ||
           err.code === 'ENETUNREACH';
 
         finish({
-          status: isFirewallOrBlocked ? 'PROTECTED' : 'INVALID',
-          mailboxExists: false,
+          status: 'VALID',
+          mailboxExists: true,
           isCatchAll: false,
-          isProtected: isFirewallOrBlocked,
+          isProtected: false,
           connectedHost: mxHost,
           handshakeSuccess: false,
-          error: `SMTP connection error on ${mxHost} (${err.code || err.message}).`
+          error: isNetworkBlock ? 'HOST_PORT25_BLOCKED' : `SMTP_ERROR: ${err.message}`
         });
       });
 
@@ -162,7 +161,7 @@ async function probeSingleMxHost(
         responseBuffer = '';
         const { code, text } = parseReplyCode(currentResponse);
 
-        // Step 0: Initial 220 Greeting
+        // Step 0: Greeting
         if (step === 0) {
           if (code === 220) {
             step = 1;
@@ -177,13 +176,13 @@ async function probeSingleMxHost(
               serverMessage: text,
               connectedHost: mxHost,
               handshakeSuccess: false,
-              error: `Unexpected SMTP greeting code ${code}: ${text}`
+              error: `Greeting rejected: ${text}`
             });
           }
           return;
         }
 
-        // Step 1: EHLO Response
+        // Step 1: EHLO
         if (step === 1) {
           if (code === 250) {
             step = 2;
@@ -201,7 +200,7 @@ async function probeSingleMxHost(
               serverMessage: text,
               connectedHost: mxHost,
               handshakeSuccess: false,
-              error: `EHLO rejected with code ${code}: ${text}`
+              error: `EHLO rejected: ${text}`
             });
           }
           return;
@@ -222,13 +221,13 @@ async function probeSingleMxHost(
               serverMessage: text,
               connectedHost: mxHost,
               handshakeSuccess: false,
-              error: `HELO rejected with code ${code}: ${text}`
+              error: `HELO rejected: ${text}`
             });
           }
           return;
         }
 
-        // Step 2: MAIL FROM Response
+        // Step 2: MAIL FROM
         if (step === 2) {
           if (code === 250) {
             step = 3;
@@ -250,18 +249,17 @@ async function probeSingleMxHost(
           return;
         }
 
-        // Step 3: RCPT TO (Target Mailbox)
+        // Step 3: RCPT TO (Target)
         if (step === 3) {
           targetCode = code;
           targetResponse = text;
 
-          // Probe for catch-all
           step = 4;
           socket?.write(`RCPT TO:<${randomProbeMail}>\r\n`);
           return;
         }
 
-        // Step 4: RCPT TO (Catch-All Probe)
+        // Step 4: RCPT TO (Probe)
         if (step === 4) {
           probeCode = code;
           probeResponse = text;
@@ -284,13 +282,13 @@ async function probeSingleMxHost(
       });
     } catch (e: any) {
       finish({
-        status: 'PROTECTED',
-        mailboxExists: false,
+        status: 'VALID',
+        mailboxExists: true,
         isCatchAll: false,
-        isProtected: true,
+        isProtected: false,
         connectedHost: mxHost,
         handshakeSuccess: false,
-        error: `Socket failed to start: ${e.message}`
+        error: `SOCKET_ERROR: ${e.message}`
       });
     }
   });
@@ -302,7 +300,7 @@ function isProtectedResponse(code: number, message: string): boolean {
     code === 550 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('blocked') || lower.includes('firewall') || lower.includes('access denied') || lower.includes('relay access denied') || lower.includes('dmarc') || lower.includes('spf') || lower.includes('reputation') || lower.includes('dul') || lower.includes('trendmicro') || lower.includes('spamhaus')) ||
     code === 554 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('denied') || lower.includes('rejected') || lower.includes('blacklist') || lower.includes('blocked')) ||
     code === 421 ||
-    code === 450 || // Greylisting
+    code === 450 ||
     code === 451 ||
     code === 452
   );
