@@ -5,12 +5,11 @@ import {
   BatchVerificationResult
 } from '../types/index.js';
 import { validateSyntax } from './syntaxValidator.js';
-import { resolveMxRecords } from './dnsResolver.js';
-import { verifySmtpMailbox } from './smtpVerifier.js';
-import { getDomainAge } from './domainAgeService.js';
+import { resolveDnsDetails } from './dnsResolver.js';
+import { verifySmtpWithFallback } from './smtpVerifier.js';
 
 /**
- * Full 5-Phase Email Verification Pipeline
+ * Enterprise Email Verification Pipeline
  */
 export async function verifyEmail(
   email: string,
@@ -19,18 +18,14 @@ export async function verifyEmail(
   const startTime = Date.now();
   const {
     checkSmtp = true,
-    checkDomainAge = true,
     allowFreeDomains = false,
-    smtpTimeoutMs,
-    customHelo,
-    customMailFrom
+    smtpTimeoutMs
   } = options;
 
-  // Phase 1: Syntax & Banned/Disposable Filter
+  // Phase 1: RFC 5322 Syntax, Role Account & Disposable/Free Domain Filter
   const syntaxResult = validateSyntax(email, allowFreeDomains);
   if (!syntaxResult.isValid) {
-    let reason = syntaxResult.error || 'Invalid email format';
-    let status: VerificationStatus = 'INVALID';
+    let reason = syntaxResult.error || 'Invalid email format.';
     let score = 0;
 
     if (syntaxResult.isBannedFreeDomain) {
@@ -42,20 +37,27 @@ export async function verifyEmail(
     }
 
     return {
-      email: syntaxResult.cleanEmail || email,
-      status,
+      email: syntaxResult.cleanEmail || (typeof email === 'string' ? email.trim() : ''),
+      status: 'INVALID',
       reason,
       score,
       isDeliverable: false,
       isCorporate: !syntaxResult.isBannedFreeDomain && !syntaxResult.isDisposableDomain,
       isCatchAll: false,
       isProtected: false,
+      isRoleAccount: syntaxResult.isRoleAccount,
+      isDisposable: syntaxResult.isDisposableDomain,
+      mailProvider: 'None',
+      didYouMean: syntaxResult.didYouMean,
       details: {
         syntax: syntaxResult,
         dns: {
           hasMxRecords: false,
           mxRecords: [],
           primaryMx: null,
+          mailProvider: 'None',
+          hasSpf: false,
+          hasDmarc: false,
           resolutionSource: 'NONE'
         }
       },
@@ -64,9 +66,9 @@ export async function verifyEmail(
     };
   }
 
-  // Phase 2: Multi-Tier DNS & MX Record Lookup
-  const dnsResult = await resolveMxRecords(syntaxResult.domain);
-  if (!dnsResult.hasMxRecords || !dnsResult.primaryMx) {
+  // Phase 2: Multi-Tier DNS & MX Resolution with SPF & DMARC
+  const dnsResult = await resolveDnsDetails(syntaxResult.domain);
+  if (!dnsResult.hasMxRecords || dnsResult.mxRecords.length === 0) {
     return {
       email: syntaxResult.cleanEmail,
       status: 'INVALID',
@@ -76,6 +78,10 @@ export async function verifyEmail(
       isCorporate: true,
       isCatchAll: false,
       isProtected: false,
+      isRoleAccount: syntaxResult.isRoleAccount,
+      isDisposable: false,
+      mailProvider: 'None',
+      didYouMean: syntaxResult.didYouMean,
       details: {
         syntax: syntaxResult,
         dns: dnsResult
@@ -85,34 +91,24 @@ export async function verifyEmail(
     };
   }
 
-  // Phase 3 & Phase 4: Execute SMTP Handshake and Domain Age Check in Parallel
-  const smtpPromise = checkSmtp
-    ? verifySmtpMailbox(syntaxResult.cleanEmail, dnsResult.primaryMx, syntaxResult.domain, {
-        heloDomain: customHelo,
-        mailFrom: customMailFrom,
-        timeoutMs: smtpTimeoutMs
-      })
-    : Promise.resolve(undefined);
-
-  const domainAgePromise = checkDomainAge
-    ? getDomainAge(syntaxResult.domain)
-    : Promise.resolve(undefined);
-
-  const [smtpResult, domainAgeResult] = await Promise.all([
-    smtpPromise,
-    domainAgePromise
-  ]);
+  // Phase 3: Real-Time SMTP Handshake on Port 25 with Multi-MX Fallback
+  let smtpResult = undefined;
+  if (checkSmtp) {
+    smtpResult = await verifySmtpWithFallback(
+      syntaxResult.cleanEmail,
+      dnsResult.mxRecords,
+      syntaxResult.domain,
+      { timeoutMs: smtpTimeoutMs }
+    );
+  }
 
   // Determine Overall Status & Confidence Score
   let status: VerificationStatus = 'VALID';
   let reason = 'Email address and mailbox confirmed active.';
-  let score = 50; // Base score for valid syntax + corporate domain + MX records
+  let score = 40; // Base score for syntax + MX records
 
-  if (domainAgeResult?.ageYears && domainAgeResult.ageYears >= 1) {
-    score += 15;
-  } else if (domainAgeResult?.ageDays && domainAgeResult.ageDays >= 90) {
-    score += 10;
-  }
+  if (dnsResult.hasSpf) score += 10;
+  if (dnsResult.hasDmarc) score += 10;
 
   let isCatchAll = false;
   let isProtected = false;
@@ -124,26 +120,25 @@ export async function verifyEmail(
 
     switch (smtpResult.status) {
       case 'VALID':
-        score += 35;
-        reason = 'Mailbox confirmed active via SMTP handshake and probe verification.';
+        score += 40;
+        reason = 'Mailbox confirmed active via real-time SMTP handshake.';
         break;
       case 'CATCH_ALL':
-        score += 20;
+        score += 25;
         reason = 'Domain mail server accepts all recipient addresses (Catch-All configured).';
         break;
       case 'PROTECTED':
-        score += 20;
-        reason = 'Enterprise spam firewall / security gateway protected (e.g. M365, Proofpoint, Cisco).';
+        score += 25;
+        reason = `Enterprise security gateway / firewall protected (${dnsResult.mailProvider}).`;
         break;
       case 'INVALID':
         score = Math.min(score, 15);
-        reason = smtpResult.error || 'Mailbox rejected by mail server (User unknown / not found).';
+        reason = smtpResult.error || 'Mailbox rejected by mail server (User not found).';
         break;
     }
   } else {
-    // If SMTP check was bypassed
-    score += 25;
-    reason = 'Domain MX records validated (SMTP probe skipped).';
+    score += 20;
+    reason = 'Domain MX and security records validated (SMTP probe skipped).';
   }
 
   score = Math.min(100, Math.max(0, score));
@@ -158,11 +153,14 @@ export async function verifyEmail(
     isCorporate: !syntaxResult.isBannedFreeDomain && !syntaxResult.isDisposableDomain,
     isCatchAll,
     isProtected,
+    isRoleAccount: syntaxResult.isRoleAccount,
+    isDisposable: syntaxResult.isDisposableDomain,
+    mailProvider: dnsResult.mailProvider,
+    didYouMean: syntaxResult.didYouMean,
     details: {
       syntax: syntaxResult,
       dns: dnsResult,
-      smtp: smtpResult,
-      domainAge: domainAgeResult
+      smtp: smtpResult
     },
     durationMs: Date.now() - startTime,
     verifiedAt: new Date().toISOString()
@@ -170,7 +168,7 @@ export async function verifyEmail(
 }
 
 /**
- * Batch Email Verification with controlled concurrency
+ * Batch Email Verification with Concurrency Control
  */
 export async function verifyEmailBatch(
   emails: string[],
@@ -180,10 +178,8 @@ export async function verifyEmailBatch(
   const startTime = Date.now();
   const results: VerificationResult[] = [];
 
-  // Filter unique non-empty strings
   const cleanList = Array.from(new Set(emails.map(e => (typeof e === 'string' ? e.trim() : '')).filter(Boolean)));
 
-  // Concurrency worker queue
   let currentIndex = 0;
   async function worker() {
     while (currentIndex < cleanList.length) {
@@ -196,15 +192,27 @@ export async function verifyEmailBatch(
         results[idx] = {
           email,
           status: 'INVALID',
-          reason: `Verification failed: ${err.message}`,
+          reason: `Verification error: ${err.message}`,
           score: 0,
           isDeliverable: false,
           isCorporate: false,
           isCatchAll: false,
           isProtected: false,
+          isRoleAccount: false,
+          isDisposable: false,
+          mailProvider: 'None',
+          didYouMean: null,
           details: {
             syntax: validateSyntax(email, options.allowFreeDomains),
-            dns: { hasMxRecords: false, mxRecords: [], primaryMx: null, resolutionSource: 'NONE' }
+            dns: {
+              hasMxRecords: false,
+              mxRecords: [],
+              primaryMx: null,
+              mailProvider: 'None',
+              hasSpf: false,
+              hasDmarc: false,
+              resolutionSource: 'NONE'
+            }
           },
           durationMs: 0,
           verifiedAt: new Date().toISOString()

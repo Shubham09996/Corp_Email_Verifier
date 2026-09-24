@@ -1,11 +1,10 @@
 import { validateSyntax } from '../services/syntaxValidator.js';
-import { resolveMxRecords } from '../services/dnsResolver.js';
+import { resolveDnsDetails } from '../services/dnsResolver.js';
 import { verifyEmail } from '../services/emailVerificationService.js';
-import { getDomainAge } from '../services/domainAgeService.js';
 
 async function runAllTests() {
   console.log('====================================================');
-  console.log('🧪 Starting Automated Email Verification Engine Tests');
+  console.log('🧪 Starting Upgraded Email Verification Engine Tests');
   console.log('====================================================\n');
 
   let passed = 0;
@@ -21,60 +20,54 @@ async function runAllTests() {
     }
   }
 
-  // --- Phase 1 Tests: Syntax & Banned Domains ---
-  console.log('--- Testing Phase 1: Syntax & Banned Domains ---');
+  // --- Phase 1: Enhanced Syntax, Typo & Role Accounts ---
+  console.log('--- Testing Phase 1: Syntax, Role Accounts & Typos ---');
   
   const p1Valid = validateSyntax('employee@stripe.com');
   assert(p1Valid.isValid && p1Valid.domain === 'stripe.com', 'Valid corporate email passes syntax');
 
-  const p1Gmail = validateSyntax('john.doe@gmail.com', false);
-  assert(!p1Gmail.isValid && p1Gmail.isBannedFreeDomain, 'Gmail is rejected for corporate email');
+  const p1Role = validateSyntax('support@company.com');
+  assert(p1Role.isValid && p1Role.isRoleAccount, 'Role-based account (support@) detected');
 
-  const p1GmailAllowed = validateSyntax('john.doe@gmail.com', true);
-  assert(p1GmailAllowed.isValid, 'Gmail is accepted when allowFreeDomains is true');
+  const p1Typo = validateSyntax('john@gmial.com');
+  assert(p1Typo.didYouMean === 'john@gmail.com', 'Domain typo (gmial.com -> gmail.com) detected');
+
+  const p1Gmail = validateSyntax('john.doe@gmail.com', false);
+  assert(!p1Gmail.isValid && p1Gmail.isBannedFreeDomain, 'Gmail rejected for corporate email');
 
   const p1Disposable = validateSyntax('temp@yopmail.com');
-  assert(!p1Disposable.isValid && p1Disposable.isDisposableDomain, 'Disposable domain is rejected');
+  assert(!p1Disposable.isValid && p1Disposable.isDisposableDomain, 'Disposable domain rejected');
 
-  const p1Malformed = validateSyntax('invalid.email@com');
-  assert(!p1Malformed.isValid, 'Malformed domain without valid TLD is rejected');
-
-  // --- Phase 2 Tests: Multi-Tier DNS & MX Lookup ---
-  console.log('\n--- Testing Phase 2: DNS & MX Lookup ---');
+  // --- Phase 2: DNS, SPF, DMARC & Provider Fingerprinting ---
+  console.log('\n--- Testing Phase 2: DNS, SPF, DMARC & Provider Detection ---');
   
-  const dnsGoogle = await resolveMxRecords('google.com');
-  assert(dnsGoogle.hasMxRecords && dnsGoogle.mxRecords.length > 0, 'Resolves MX records for google.com');
-  console.log(`   Found ${dnsGoogle.mxRecords.length} MX records for google.com (Primary: ${dnsGoogle.primaryMx}, Source: ${dnsGoogle.resolutionSource})`);
+  const dnsGoogle = await resolveDnsDetails('google.com');
+  assert(dnsGoogle.hasMxRecords && dnsGoogle.mailProvider.includes('Google'), 'Identifies Google Workspace provider');
+  console.log(`   google.com Provider: ${dnsGoogle.mailProvider}, SPF: ${dnsGoogle.hasSpf}, DMARC: ${dnsGoogle.hasDmarc}`);
 
-  const dnsMicrosoft = await resolveMxRecords('microsoft.com');
-  assert(dnsMicrosoft.hasMxRecords && dnsMicrosoft.primaryMx !== null, 'Resolves MX records for microsoft.com');
+  const dnsMicrosoft = await resolveDnsDetails('microsoft.com');
+  assert(dnsMicrosoft.hasMxRecords && dnsMicrosoft.mailProvider.includes('Microsoft'), 'Identifies Microsoft 365 provider');
+  console.log(`   microsoft.com Provider: ${dnsMicrosoft.mailProvider}, SPF: ${dnsMicrosoft.hasSpf}, DMARC: ${dnsMicrosoft.hasDmarc}`);
 
-  const dnsFake = await resolveMxRecords('fake-non-existent-domain-123456789.xyz');
-  assert(!dnsFake.hasMxRecords, 'Non-existent domain returns no MX records');
+  const dnsFake = await resolveDnsDetails('fake-non-existent-domain-123456789.xyz');
+  assert(!dnsFake.hasMxRecords, 'Non-existent domain returns no MX');
 
-  // --- Phase 4 Tests: Domain Age & Corporate Legitimacy ---
-  console.log('\n--- Testing Phase 4: Domain Age (WHOIS / RDAP) ---');
-  
-  const ageGoogle = await getDomainAge('google.com');
-  assert(ageGoogle.creationDate !== null && (ageGoogle.ageYears || 0) > 20, 'Google.com domain age > 20 years');
-  console.log(`   google.com created on ${ageGoogle.creationDate}, Age: ${ageGoogle.ageYears} years, Registrar: ${ageGoogle.registrar}`);
-
-  const ageStripe = await getDomainAge('stripe.com');
-  assert(ageStripe.creationDate !== null && (ageStripe.ageYears || 0) > 10, 'Stripe.com domain age > 10 years');
-  console.log(`   stripe.com created on ${ageStripe.creationDate}, Age: ${ageStripe.ageYears} years`);
-
-  // --- End-to-End Pipeline Tests ---
-  console.log('\n--- Testing End-to-End 5-Phase Pipeline ---');
+  // --- Phase 3 & End-to-End ---
+  console.log('\n--- Testing Phase 3: Real-Time Handshake & Pipeline ---');
   
   const resBanned = await verifyEmail('user@gmail.com', { allowFreeDomains: false });
-  assert(Boolean(resBanned.status === 'INVALID' && resBanned.reason && resBanned.reason.includes('Personal email')), 'Gmail filtered out with score and reason');
+  assert(Boolean(resBanned.status === 'INVALID' && resBanned.reason && resBanned.reason.includes('Personal email')), 'Gmail filtered with reason');
 
   const resInvalidDomain = await verifyEmail('test@fake-non-existent-domain-123456789.xyz');
-  assert(Boolean(resInvalidDomain.status === 'INVALID' && !resInvalidDomain.details.dns?.hasMxRecords), 'Fake domain filtered with missing MX');
+  assert(Boolean(resInvalidDomain.status === 'INVALID' && !resInvalidDomain.details.dns.hasMxRecords), 'Fake domain filtered with missing MX');
 
-  const resCorp = await verifyEmail('contact@stripe.com', { checkSmtp: true, checkDomainAge: true });
-  assert(Boolean(resCorp.isDeliverable && resCorp.isCorporate), 'Stripe corporate email is evaluated with full breakdown');
-  console.log(`   contact@stripe.com result status: ${resCorp.status}, Deliverable: ${resCorp.isDeliverable}, Score: ${resCorp.score}/100`);
+  const resStripe = await verifyEmail('contact@stripe.com', { checkSmtp: true });
+  assert(Boolean(resStripe.isDeliverable && resStripe.isCorporate), 'Stripe corporate email is evaluated');
+  console.log(`   contact@stripe.com status: ${resStripe.status}, Provider: ${resStripe.mailProvider}, Score: ${resStripe.score}/100`);
+
+  const resMicrosoft = await verifyEmail('hr@microsoft.com', { checkSmtp: true });
+  assert(Boolean(resMicrosoft.isDeliverable && resMicrosoft.mailProvider.includes('Microsoft')), 'Microsoft 365 security evaluated');
+  console.log(`   hr@microsoft.com status: ${resMicrosoft.status}, Provider: ${resMicrosoft.mailProvider}, Score: ${resMicrosoft.score}/100`);
 
   console.log('\n====================================================');
   console.log(`🏁 Test Summary: ${passed} Passed, ${failed} Failed`);

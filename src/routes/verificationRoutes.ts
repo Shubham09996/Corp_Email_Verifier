@@ -2,7 +2,6 @@ import { Router } from 'express';
 import {
   handleVerifySingleEmail,
   handleVerifyBatchEmails,
-  handleDomainAge,
   handleHealthCheck
 } from '../controllers/verificationController.js';
 import { projectAuth } from '../middleware/apiKeyAuth.js';
@@ -22,9 +21,5 @@ router.get('/api/verify', handleVerifySingleEmail);
 
 // Batch Email Verification
 router.post('/api/verify/batch', handleVerifyBatchEmails);
-
-// Domain Age & Corporate Legitimacy
-router.post('/api/domain-age', handleDomainAge);
-router.get('/api/domain-age/:domain', handleDomainAge);
 
 export default router;

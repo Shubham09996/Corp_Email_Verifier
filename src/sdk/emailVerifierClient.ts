@@ -9,18 +9,7 @@ export interface EmailVerifierClientConfig {
 }
 
 /**
- * Lightweight Client SDK for integrating Email Verification API into any project.
- * 
- * Usage:
- * ```typescript
- * const verifier = new EmailVerifierClient({
- *   baseUrl: 'https://your-api.onrender.com',
- *   projectId: 'project_1',
- *   apiKey: 'secret_key_1'
- * });
- * 
- * const res = await verifier.verifyEmail('employee@company.com');
- * ```
+ * Lightweight Client SDK for integrating Email Verification API.
  */
 export class EmailVerifierClient {
   private client: AxiosInstance;
@@ -40,7 +29,7 @@ export class EmailVerifierClient {
   }
 
   /**
-   * Verify single email address.
+   * Verify single corporate email address.
    */
   async verifyEmail(
     email: string,
@@ -69,30 +58,6 @@ export class EmailVerifierClient {
       projectId: this.projectId,
       options,
       concurrency
-    });
-    return response.data;
-  }
-
-  /**
-   * Check domain creation date and age.
-   */
-  async getDomainAge(domain: string): Promise<{
-    success: boolean;
-    projectId?: string;
-    data: {
-      domain: string;
-      creationDate: string | null;
-      ageYears: number | null;
-      ageDays: number | null;
-      isNewDomain: boolean;
-      registrar: string | null;
-      status?: string[];
-      source: string;
-    };
-  }> {
-    const response = await this.client.post('/api/domain-age', {
-      domain,
-      projectId: this.projectId
     });
     return response.data;
   }

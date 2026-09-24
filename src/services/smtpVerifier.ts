@@ -1,6 +1,6 @@
 import net from 'net';
 import crypto from 'crypto';
-import { SmtpCheckResult, VerificationStatus } from '../types/index.js';
+import { SmtpCheckResult, VerificationStatus, MxRecord } from '../types/index.js';
 import { config } from '../config/index.js';
 
 interface SmtpProbeOptions {
@@ -10,9 +10,55 @@ interface SmtpProbeOptions {
 }
 
 /**
- * Perform low-level TCP SMTP handshake on port 25 to verify mailbox existence and catch-all status.
+ * Verify mailbox with multi-MX server fallback.
  */
-export async function verifySmtpMailbox(
+export async function verifySmtpWithFallback(
+  email: string,
+  mxRecords: MxRecord[],
+  domain: string,
+  options?: SmtpProbeOptions
+): Promise<SmtpCheckResult> {
+  if (!mxRecords || mxRecords.length === 0) {
+    return {
+      status: 'INVALID',
+      mailboxExists: false,
+      isCatchAll: false,
+      isProtected: false,
+      handshakeSuccess: false,
+      error: 'No MX records available for SMTP handshake.'
+    };
+  }
+
+  // Try top 2 MX records if first fails due to network/timeout
+  const maxAttempts = Math.min(2, mxRecords.length);
+  let lastResult: SmtpCheckResult | null = null;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    const mxHost = mxRecords[i].exchange;
+    const result = await probeSingleMxHost(email, mxHost, domain, options);
+
+    // If result was decisive (VALID, CATCH_ALL, or clear INVALID), return immediately
+    if (result.handshakeSuccess || result.status === 'VALID' || result.status === 'CATCH_ALL') {
+      return result;
+    }
+
+    lastResult = result;
+  }
+
+  return lastResult || {
+    status: 'PROTECTED',
+    mailboxExists: false,
+    isCatchAll: false,
+    isProtected: true,
+    handshakeSuccess: false,
+    error: 'SMTP probe connection could not be established.'
+  };
+}
+
+/**
+ * Low-level TCP socket SMTP handshake on Port 25
+ */
+async function probeSingleMxHost(
   email: string,
   mxHost: string,
   domain: string,
@@ -60,7 +106,6 @@ export async function verifySmtpMailbox(
       const lines = chunk.trim().split('\n');
       if (lines.length === 0) return false;
       const lastLine = lines[lines.length - 1].trim();
-      // An SMTP reply line is complete if it matches ^\d{3}\s or single line ^\d{3}$
       return /^\d{3}(\s.*)?$/.test(lastLine);
     };
 
@@ -72,12 +117,8 @@ export async function verifySmtpMailbox(
       return { code, text: raw.trim() };
     };
 
-    // Initialize TCP socket connection
     try {
-      socket = net.createConnection({ host: mxHost, port: config.smtp.port }, () => {
-        // Socket connected, waiting for 220 greeting
-      });
-
+      socket = net.createConnection({ host: mxHost, port: config.smtp.port });
       socket.setEncoding('utf-8');
       socket.setTimeout(timeoutMs);
 
@@ -89,7 +130,7 @@ export async function verifySmtpMailbox(
           isProtected: true,
           connectedHost: mxHost,
           handshakeSuccess: false,
-          error: `SMTP connection to ${mxHost}:25 timed out after ${timeoutMs}ms (likely blocked by firewall or ISP port 25 restriction).`
+          error: `SMTP connection to ${mxHost}:25 timed out after ${timeoutMs}ms (Enterprise firewall or ISP port 25 block).`
         });
       });
 
@@ -107,21 +148,21 @@ export async function verifySmtpMailbox(
           isProtected: isFirewallOrBlocked,
           connectedHost: mxHost,
           handshakeSuccess: false,
-          error: `SMTP connection error (${err.code || err.message}).`
+          error: `SMTP connection error on ${mxHost} (${err.code || err.message}).`
         });
       });
 
       socket.on('data', (data: string) => {
         responseBuffer += data;
         if (!isMultilineComplete(responseBuffer)) {
-          return; // Wait for full SMTP multiline response
+          return;
         }
 
         const currentResponse = responseBuffer;
         responseBuffer = '';
         const { code, text } = parseReplyCode(currentResponse);
 
-        // Step 0: Initial 220 Greeting from server
+        // Step 0: Initial 220 Greeting
         if (step === 0) {
           if (code === 220) {
             step = 1;
@@ -148,7 +189,6 @@ export async function verifySmtpMailbox(
             step = 2;
             socket?.write(`MAIL FROM:<${mailFrom}>\r\n`);
           } else if (code >= 500 && code <= 504) {
-            // Fallback to HELO if EHLO not supported
             step = 1.5;
             socket?.write(`HELO ${heloDomain}\r\n`);
           } else {
@@ -167,7 +207,7 @@ export async function verifySmtpMailbox(
           return;
         }
 
-        // Step 1.5: HELO fallback Response
+        // Step 1.5: HELO fallback
         if (step === 1.5) {
           if (code === 250) {
             step = 2;
@@ -210,30 +250,28 @@ export async function verifySmtpMailbox(
           return;
         }
 
-        // Step 3: RCPT TO (Applicant Target Mailbox)
+        // Step 3: RCPT TO (Target Mailbox)
         if (step === 3) {
           targetCode = code;
           targetResponse = text;
 
-          // Now probe for catch-all
+          // Probe for catch-all
           step = 4;
           socket?.write(`RCPT TO:<${randomProbeMail}>\r\n`);
           return;
         }
 
-        // Step 4: RCPT TO (Random Probe for Catch-All detection)
+        // Step 4: RCPT TO (Catch-All Probe)
         if (step === 4) {
           probeCode = code;
           probeResponse = text;
 
-          // Send RSET and QUIT to cleanly close
           try {
             socket?.write('RSET\r\nQUIT\r\n');
           } catch {
             // ignore
           }
 
-          // Evaluate the combined results
           const result = evaluateSmtpHandshakeResult(
             targetCode,
             targetResponse,
@@ -252,30 +290,24 @@ export async function verifySmtpMailbox(
         isProtected: true,
         connectedHost: mxHost,
         handshakeSuccess: false,
-        error: `Failed to initiate socket: ${e.message}`
+        error: `Socket failed to start: ${e.message}`
       });
     }
   });
 }
 
-/**
- * Check if the SMTP response code or text represents a corporate firewall, spam block, or greylisting.
- */
 function isProtectedResponse(code: number, message: string): boolean {
   const lower = message.toLowerCase();
   return (
-    code === 550 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('blocked') || lower.includes('firewall') || lower.includes('access denied') || lower.includes('relay access denied') || lower.includes('dmarc') || lower.includes('spf') || lower.includes('reputation')) ||
+    code === 550 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('blocked') || lower.includes('firewall') || lower.includes('access denied') || lower.includes('relay access denied') || lower.includes('dmarc') || lower.includes('spf') || lower.includes('reputation') || lower.includes('dul') || lower.includes('trendmicro') || lower.includes('spamhaus')) ||
     code === 554 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('denied') || lower.includes('rejected') || lower.includes('blacklist') || lower.includes('blocked')) ||
-    code === 421 || // Service not available, closing transmission channel
-    code === 450 || // Mailbox temporarily unavailable / greylisting
-    code === 451 || // Local error in processing
-    code === 452    // Insufficient system storage
+    code === 421 ||
+    code === 450 || // Greylisting
+    code === 451 ||
+    code === 452
   );
 }
 
-/**
- * Check if the SMTP response indicates a non-existent mailbox.
- */
 function isMailboxNotFound(code: number, message: string): boolean {
   const lower = message.toLowerCase();
   return (
@@ -297,9 +329,6 @@ function isMailboxNotFound(code: number, message: string): boolean {
   );
 }
 
-/**
- * Evaluate status based on applicant target probe and random fake probe.
- */
 function evaluateSmtpHandshakeResult(
   targetCode: number,
   targetResponse: string,
@@ -310,10 +339,8 @@ function evaluateSmtpHandshakeResult(
   const targetAccepted = targetCode === 250 || targetCode === 251;
   const probeAccepted = probeCode === 250 || probeCode === 251;
 
-  // Case 1: Target was accepted (250)
   if (targetAccepted) {
     if (probeAccepted) {
-      // Domain accepts anything -> Catch-All
       return {
         status: 'CATCH_ALL',
         mailboxExists: true,
@@ -327,7 +354,6 @@ function evaluateSmtpHandshakeResult(
         handshakeSuccess: true
       };
     } else {
-      // Target accepted, Fake rejected -> Definitively Valid Mailbox!
       return {
         status: 'VALID',
         mailboxExists: true,
@@ -343,7 +369,6 @@ function evaluateSmtpHandshakeResult(
     }
   }
 
-  // Case 2: Target rejected due to Spam Firewall / Security Gateway (5.7.1, 4xx, Proofpoint, M365, etc.)
   if (isProtectedResponse(targetCode, targetResponse)) {
     return {
       status: 'PROTECTED',
@@ -356,11 +381,10 @@ function evaluateSmtpHandshakeResult(
       catchAllProbeResponse: probeResponse,
       connectedHost: mxHost,
       handshakeSuccess: true,
-      error: `Corporate firewall / anti-spam protection detected (${targetResponse}).`
+      error: `Corporate firewall / security gateway protected (${targetResponse}).`
     };
   }
 
-  // Case 3: Target rejected with Mailbox Not Found / 5.1.1
   if (isMailboxNotFound(targetCode, targetResponse) || targetCode === 550 || targetCode === 551 || targetCode === 553) {
     return {
       status: 'INVALID',
@@ -377,7 +401,6 @@ function evaluateSmtpHandshakeResult(
     };
   }
 
-  // Fallback
   return {
     status: 'INVALID',
     mailboxExists: false,

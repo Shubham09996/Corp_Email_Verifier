@@ -1,7 +1,12 @@
 import { SyntaxCheckResult } from '../types/index.js';
-import { isBannedFreeDomain, isDisposableDomain } from '../constants/bannedDomains.js';
+import {
+  isBannedFreeDomain,
+  isDisposableDomain,
+  isRoleAccount,
+  checkDomainTypo
+} from '../constants/bannedDomains.js';
 
-// Standard RFC 5322 compatible regex check
+// RFC 5322 standard regex
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
 export function validateSyntax(
@@ -13,24 +18,28 @@ export function validateSyntax(
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail: '',
       user: '',
       domain: '',
-      error: 'Official work / company email is required.'
+      didYouMean: null,
+      error: 'Official corporate email address is required.'
     };
   }
 
   const cleanEmail = email.trim().toLowerCase();
 
-  // Basic length checks according to RFC specifications
+  // Basic length checks
   if (cleanEmail.length > 254) {
     return {
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail,
       user: '',
       domain: '',
+      didYouMean: null,
       error: 'Email address exceeds maximum allowed length (254 characters).'
     };
   }
@@ -41,9 +50,11 @@ export function validateSyntax(
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail,
       user: '',
       domain: '',
+      didYouMean: null,
       error: 'Please provide a valid official corporate email address.'
     };
   }
@@ -56,64 +67,77 @@ export function validateSyntax(
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail,
       user,
       domain,
+      didYouMean: null,
       error: 'Email username exceeds maximum allowed length (64 characters).'
     };
   }
 
+  // Regex check
   if (!EMAIL_REGEX.test(cleanEmail)) {
     return {
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail,
       user,
       domain,
+      didYouMean: null,
       error: 'Please provide a valid official corporate email address.'
     };
   }
 
-  // Check for consecutive dots
-  if (cleanEmail.includes('..')) {
+  // Consecutive dots or invalid dots
+  if (cleanEmail.includes('..') || user.startsWith('.') || user.endsWith('.')) {
     return {
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail,
       user,
       domain,
-      error: 'Email address contains invalid consecutive dots.'
+      didYouMean: null,
+      error: 'Email address contains invalid consecutive or boundary dots.'
     };
   }
 
-  // Check domain TLD length
+  // TLD validation
   const domainParts = domain.split('.');
   if (domainParts.length < 2 || domainParts[domainParts.length - 1].length < 2) {
     return {
       isValid: false,
       isBannedFreeDomain: false,
       isDisposableDomain: false,
+      isRoleAccount: false,
       cleanEmail,
       user,
       domain,
+      didYouMean: null,
       error: 'Domain does not have a valid top-level domain (TLD).'
     };
   }
 
   const isBanned = isBannedFreeDomain(domain);
   const isDisposable = isDisposableDomain(domain);
+  const isRole = isRoleAccount(user);
+  const didYouMean = checkDomainTypo(user, domain);
 
   if (!allowFreeDomains && isBanned) {
     return {
       isValid: false,
       isBannedFreeDomain: true,
       isDisposableDomain: isDisposable,
+      isRoleAccount: isRole,
       cleanEmail,
       user,
       domain,
-      error: 'Personal email domains (Gmail, Yahoo, Outlook, etc.) are not allowed for official email. Please provide your official company/work email.'
+      didYouMean,
+      error: 'Personal email domains (Gmail, Yahoo, Outlook, etc.) are not allowed for corporate email.'
     };
   }
 
@@ -122,9 +146,11 @@ export function validateSyntax(
       isValid: false,
       isBannedFreeDomain: isBanned,
       isDisposableDomain: true,
+      isRoleAccount: isRole,
       cleanEmail,
       user,
       domain,
+      didYouMean,
       error: 'Disposable / temporary email addresses are not permitted.'
     };
   }
@@ -133,8 +159,10 @@ export function validateSyntax(
     isValid: true,
     isBannedFreeDomain: isBanned,
     isDisposableDomain: isDisposable,
+    isRoleAccount: isRole,
     cleanEmail,
     user,
-    domain
+    domain,
+    didYouMean
   };
 }
