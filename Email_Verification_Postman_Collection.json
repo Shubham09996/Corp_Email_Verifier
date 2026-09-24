@@ -1,0 +1,155 @@
+{
+  "info": {
+    "_postman_id": "c1f7a83d-6b8f-4d92-bf39-2a9f1b40283b",
+    "name": "Corporate Email Verification API (Bharat API Cloud)",
+    "description": "Postman Collection for Corporate Email Verification API with Bharat API Cloud credentials.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "projectId",
+      "value": "bharat_api_cloud",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "bac_live_7f8e3a2b1c0d4e5f",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Verify Single Corporate Email",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Project-Id",
+            "value": "{{projectId}}"
+          },
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"employee@microsoft.com\",\n  \"referenceId\": \"BAC_REQ_1001\",\n  \"options\": {\n    \"allowFreeDomains\": false,\n    \"checkSmtp\": true,\n    \"checkDomainAge\": true\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/verify",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "verify"]
+        }
+      }
+    },
+    {
+      "name": "2. Verify Personal Email (Rejection Test)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Project-Id",
+            "value": "{{projectId}}"
+          },
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"john.doe@gmail.com\",\n  \"options\": {\n    \"allowFreeDomains\": false\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/verify",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "verify"]
+        }
+      }
+    },
+    {
+      "name": "3. Batch Verify Emails List",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Project-Id",
+            "value": "{{projectId}}"
+          },
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"emails\": [\n    \"contact@stripe.com\",\n    \"hr@microsoft.com\",\n    \"user@gmail.com\",\n    \"temp@yopmail.com\"\n  ],\n  \"concurrency\": 5,\n  \"options\": {\n    \"allowFreeDomains\": false\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/verify/batch",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "verify", "batch"]
+        }
+      }
+    },
+    {
+      "name": "4. Check Domain Age & Legitimacy",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Project-Id",
+            "value": "{{projectId}}"
+          },
+          {
+            "key": "X-API-Key",
+            "value": "{{apiKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"domain\": \"stripe.com\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/domain-age",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "domain-age"]
+        }
+      }
+    },
+    {
+      "name": "5. API Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "health"]
+        }
+      }
+    }
+  ]
+}
