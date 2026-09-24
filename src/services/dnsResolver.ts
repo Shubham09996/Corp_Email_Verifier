@@ -17,6 +17,14 @@ try {
   // fallback to system default
 }
 
+function isValidMxHost(exchange: string): boolean {
+  const clean = exchange.toLowerCase().trim();
+  if (!clean || clean === '.' || clean === '0.0.0.0' || clean === '127.0.0.1' || clean === 'localhost') {
+    return false;
+  }
+  return clean.includes('.');
+}
+
 /**
  * Identify the email provider / security gateway from MX exchange hostnames.
  */
@@ -73,10 +81,14 @@ async function resolveMxWithDoHFallback(cleanDomain: string): Promise<{ mxRecord
   try {
     const addrs = await customResolver.resolveMx(cleanDomain);
     if (addrs && addrs.length > 0) {
-      const sorted = addrs
+      const valid = addrs
         .map(r => ({ exchange: r.exchange.trim().replace(/\.$/, ''), priority: r.priority }))
+        .filter(r => isValidMxHost(r.exchange))
         .sort((a, b) => a.priority - b.priority);
-      return { mxRecords: sorted, source: 'NATIVE_DNS' };
+
+      if (valid.length > 0) {
+        return { mxRecords: valid, source: 'NATIVE_DNS' };
+      }
     }
   } catch {
     // fallback
@@ -94,7 +106,10 @@ async function resolveMxWithDoHFallback(cleanDomain: string): Promise<{ mxRecord
         if (item.type === 15 && item.data) {
           const parts = item.data.trim().split(/\s+/);
           if (parts.length >= 2) {
-            mxList.push({ priority: parseInt(parts[0], 10) || 10, exchange: parts[1].replace(/\.$/, '') });
+            const exchange = parts[1].replace(/\.$/, '');
+            if (isValidMxHost(exchange)) {
+              mxList.push({ priority: parseInt(parts[0], 10) || 10, exchange });
+            }
           }
         }
       }
@@ -119,7 +134,10 @@ async function resolveMxWithDoHFallback(cleanDomain: string): Promise<{ mxRecord
         if (item.type === 15 && item.data) {
           const parts = item.data.trim().split(/\s+/);
           if (parts.length >= 2) {
-            mxList.push({ priority: parseInt(parts[0], 10) || 10, exchange: parts[1].replace(/\.$/, '') });
+            const exchange = parts[1].replace(/\.$/, '');
+            if (isValidMxHost(exchange)) {
+              mxList.push({ priority: parseInt(parts[0], 10) || 10, exchange });
+            }
           }
         }
       }
@@ -170,18 +188,16 @@ async function resolveDmarc(cleanDomain: string): Promise<{ hasDmarc: boolean; d
 }
 
 /**
- * Parallel DNS resolution for maximum speed.
+ * Parallel DNS resolution with Null MX filtering.
  */
 export async function resolveDnsDetails(domain: string): Promise<DnsCheckResult> {
   const cleanDomain = domain.toLowerCase().trim();
 
-  // 1. Cache hit -> Instant (< 1ms)
   const cached = dnsCache.get(cleanDomain);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.data;
   }
 
-  // 2. Parallel Resolution (MX + SPF + DMARC at the exact same time)
   const [mxResult, spfResult, dmarcResult] = await Promise.all([
     resolveMxWithDoHFallback(cleanDomain),
     resolveSpf(cleanDomain),
@@ -203,7 +219,6 @@ export async function resolveDnsDetails(domain: string): Promise<DnsCheckResult>
     })
   };
 
-  // Cache result for 2 hours
   dnsCache.set(cleanDomain, {
     data: result,
     expiresAt: Date.now() + config.cache.mxRecordTtlMs

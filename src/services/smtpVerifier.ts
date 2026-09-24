@@ -32,7 +32,6 @@ export async function verifySmtpWithFallback(
   const primaryMx = mxRecords[0].exchange;
   const timeoutMs = options?.timeoutMs || config.smtp.timeoutMs || 2000;
 
-  // Enforce strict fast timeout promise race
   const probePromise = probeSingleMxHost(email, primaryMx, domain, {
     ...options,
     timeoutMs
@@ -41,10 +40,10 @@ export async function verifySmtpWithFallback(
   const timeoutPromise = new Promise<SmtpCheckResult>((resolve) => {
     setTimeout(() => {
       resolve({
-        status: 'VALID',
-        mailboxExists: true,
+        status: 'PROTECTED',
+        mailboxExists: false,
         isCatchAll: false,
-        isProtected: false,
+        isProtected: true,
         handshakeSuccess: false,
         error: 'HOST_PORT25_BLOCKED'
       });
@@ -123,10 +122,10 @@ async function probeSingleMxHost(
 
       socket.on('timeout', () => {
         finish({
-          status: 'VALID',
-          mailboxExists: true,
+          status: 'PROTECTED',
+          mailboxExists: false,
           isCatchAll: false,
-          isProtected: false,
+          isProtected: true,
           connectedHost: mxHost,
           handshakeSuccess: false,
           error: 'HOST_PORT25_BLOCKED'
@@ -141,10 +140,10 @@ async function probeSingleMxHost(
           err.code === 'ENETUNREACH';
 
         finish({
-          status: 'VALID',
-          mailboxExists: true,
+          status: 'PROTECTED',
+          mailboxExists: false,
           isCatchAll: false,
-          isProtected: false,
+          isProtected: true,
           connectedHost: mxHost,
           handshakeSuccess: false,
           error: isNetworkBlock ? 'HOST_PORT25_BLOCKED' : `SMTP_ERROR: ${err.message}`
@@ -282,10 +281,10 @@ async function probeSingleMxHost(
       });
     } catch (e: any) {
       finish({
-        status: 'VALID',
-        mailboxExists: true,
+        status: 'PROTECTED',
+        mailboxExists: false,
         isCatchAll: false,
-        isProtected: false,
+        isProtected: true,
         connectedHost: mxHost,
         handshakeSuccess: false,
         error: `SOCKET_ERROR: ${e.message}`
@@ -297,8 +296,8 @@ async function probeSingleMxHost(
 function isProtectedResponse(code: number, message: string): boolean {
   const lower = message.toLowerCase();
   return (
-    code === 550 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('blocked') || lower.includes('firewall') || lower.includes('access denied') || lower.includes('relay access denied') || lower.includes('dmarc') || lower.includes('spf') || lower.includes('reputation') || lower.includes('dul') || lower.includes('trendmicro') || lower.includes('spamhaus')) ||
-    code === 554 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('denied') || lower.includes('rejected') || lower.includes('blacklist') || lower.includes('blocked')) ||
+    (code === 550 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('blocked') || lower.includes('firewall') || lower.includes('access denied') || lower.includes('dmarc') || lower.includes('spf') || lower.includes('reputation') || lower.includes('dul') || lower.includes('trendmicro') || lower.includes('spamhaus') || lower.includes('proofpoint') || lower.includes('mimecast'))) ||
+    (code === 554 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('denied') || lower.includes('rejected') || lower.includes('blacklist') || lower.includes('blocked'))) ||
     code === 421 ||
     code === 450 ||
     code === 451 ||
@@ -309,12 +308,21 @@ function isProtectedResponse(code: number, message: string): boolean {
 function isMailboxNotFound(code: number, message: string): boolean {
   const lower = message.toLowerCase();
   return (
-    (code >= 550 && code <= 553) &&
+    (code >= 550 && code <= 553) ||
+    code === 501 ||
+    code === 503 ||
     (
       lower.includes('5.1.1') ||
+      lower.includes('5.1.0') ||
+      lower.includes('5.1.2') ||
+      lower.includes('5.1.3') ||
+      lower.includes('5.2.1') ||
+      lower.includes('5.4.1') ||
+      lower.includes('5.5.0') ||
       lower.includes('user unknown') ||
       lower.includes('mailbox not found') ||
       lower.includes('recipient not found') ||
+      lower.includes('recipient rejected') ||
       lower.includes('does not exist') ||
       lower.includes('invalid recipient') ||
       lower.includes('no such user') ||
@@ -322,7 +330,12 @@ function isMailboxNotFound(code: number, message: string): boolean {
       lower.includes('user not found') ||
       lower.includes('invalid mailbox') ||
       lower.includes('account does not exist') ||
-      lower.includes('undeliverable')
+      lower.includes('undeliverable') ||
+      lower.includes('address rejected') ||
+      lower.includes('not our customer') ||
+      lower.includes('mailbox unavailable') ||
+      lower.includes('disabled') ||
+      lower.includes('inactive')
     )
   );
 }
@@ -337,6 +350,7 @@ function evaluateSmtpHandshakeResult(
   const targetAccepted = targetCode === 250 || targetCode === 251;
   const probeAccepted = probeCode === 250 || probeCode === 251;
 
+  // Case 1: Target was accepted (250)
   if (targetAccepted) {
     if (probeAccepted) {
       return {
@@ -367,6 +381,24 @@ function evaluateSmtpHandshakeResult(
     }
   }
 
+  // Case 2: Target rejected due to Mailbox Not Found / User Unknown / 5.1.1
+  if (isMailboxNotFound(targetCode, targetResponse)) {
+    return {
+      status: 'INVALID',
+      mailboxExists: false,
+      isCatchAll: false,
+      isProtected: false,
+      responseCode: targetCode,
+      serverMessage: targetResponse,
+      targetProbeResponse: targetResponse,
+      catchAllProbeResponse: probeResponse,
+      connectedHost: mxHost,
+      handshakeSuccess: true,
+      error: `Mailbox does not exist (${targetResponse}).`
+    };
+  }
+
+  // Case 3: Target blocked by Enterprise Spam Firewall (5.7.1, Proofpoint, M365)
   if (isProtectedResponse(targetCode, targetResponse)) {
     return {
       status: 'PROTECTED',
@@ -383,22 +415,7 @@ function evaluateSmtpHandshakeResult(
     };
   }
 
-  if (isMailboxNotFound(targetCode, targetResponse) || targetCode === 550 || targetCode === 551 || targetCode === 553) {
-    return {
-      status: 'INVALID',
-      mailboxExists: false,
-      isCatchAll: false,
-      isProtected: false,
-      responseCode: targetCode,
-      serverMessage: targetResponse,
-      targetProbeResponse: targetResponse,
-      catchAllProbeResponse: probeResponse,
-      connectedHost: mxHost,
-      handshakeSuccess: true,
-      error: `Mailbox does not exist (${targetResponse}).`
-    };
-  }
-
+  // Fallback rejection
   return {
     status: 'INVALID',
     mailboxExists: false,

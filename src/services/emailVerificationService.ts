@@ -5,6 +5,7 @@ import {
   BatchVerificationResult
 } from '../types/index.js';
 import { validateSyntax } from './syntaxValidator.js';
+import { isSuspiciousUsername } from './entropyValidator.js';
 import { resolveDnsDetails } from './dnsResolver.js';
 import { verifySmtpWithFallback } from './smtpVerifier.js';
 
@@ -22,7 +23,7 @@ export async function verifyEmail(
     smtpTimeoutMs
   } = options;
 
-  // Phase 1: RFC Syntax, Role Account & Disposable/Free Domain Filter
+  // Phase 1: RFC Syntax & Disposable/Free Domain Filter
   const syntaxResult = validateSyntax(email, allowFreeDomains);
   if (!syntaxResult.isValid) {
     let reason = syntaxResult.error || 'Invalid email format.';
@@ -66,6 +67,39 @@ export async function verifyEmail(
     };
   }
 
+  // Phase 1.5: Synthetic / Dummy / Keyboard-Smash Pattern Detection
+  const suspiciousCheck = isSuspiciousUsername(syntaxResult.user);
+  if (suspiciousCheck.isSuspicious) {
+    return {
+      email: syntaxResult.cleanEmail,
+      status: 'INVALID',
+      reason: suspiciousCheck.reason || 'Synthetic or dummy username pattern detected.',
+      score: 0,
+      isDeliverable: false,
+      isCorporate: true,
+      isCatchAll: false,
+      isProtected: false,
+      isRoleAccount: syntaxResult.isRoleAccount,
+      isDisposable: false,
+      mailProvider: 'None',
+      didYouMean: syntaxResult.didYouMean,
+      details: {
+        syntax: syntaxResult,
+        dns: {
+          hasMxRecords: false,
+          mxRecords: [],
+          primaryMx: null,
+          mailProvider: 'None',
+          hasSpf: false,
+          hasDmarc: false,
+          resolutionSource: 'NONE'
+        }
+      },
+      durationMs: Date.now() - startTime,
+      verifiedAt: new Date().toISOString()
+    };
+  }
+
   // Phase 2: Multi-Tier DNS & MX Resolution with SPF & DMARC
   const dnsResult = await resolveDnsDetails(syntaxResult.domain);
   if (!dnsResult.hasMxRecords || dnsResult.mxRecords.length === 0) {
@@ -73,7 +107,7 @@ export async function verifyEmail(
       email: syntaxResult.cleanEmail,
       status: 'INVALID',
       reason: dnsResult.error || `No mail exchange (MX) records found for domain '${syntaxResult.domain}'.`,
-      score: 10,
+      score: 0,
       isDeliverable: false,
       isCorporate: true,
       isCatchAll: false,
@@ -102,9 +136,9 @@ export async function verifyEmail(
     );
   }
 
-  // Determine Overall Status & Confidence Score
+  // Phase 4: Precision Status Evaluation
   let status: VerificationStatus = 'VALID';
-  let reason = 'Corporate email address and mail infrastructure confirmed active.';
+  let reason = 'Corporate mailbox confirmed active and deliverable.';
   let score = 50;
 
   if (dnsResult.hasSpf) score += 10;
@@ -114,34 +148,29 @@ export async function verifyEmail(
   let isProtected = false;
 
   if (smtpResult) {
-    if (smtpResult.handshakeSuccess) {
-      status = smtpResult.status;
-      isCatchAll = smtpResult.isCatchAll;
-      isProtected = smtpResult.isProtected;
+    status = smtpResult.status;
+    isCatchAll = smtpResult.isCatchAll;
+    isProtected = smtpResult.isProtected;
 
-      switch (smtpResult.status) {
-        case 'VALID':
-          score += 30;
-          reason = 'Mailbox confirmed active via real-time SMTP handshake.';
-          break;
-        case 'CATCH_ALL':
-          score += 20;
-          reason = 'Domain mail server accepts all recipient addresses (Catch-All configured).';
-          break;
-        case 'PROTECTED':
-          score += 20;
-          reason = `Enterprise security gateway protection detected (${dnsResult.mailProvider}).`;
-          break;
-        case 'INVALID':
-          score = Math.min(score, 15);
-          reason = smtpResult.error || 'Mailbox rejected by mail server (User not found).';
-          break;
-      }
-    } else {
-      // If port 25 was restricted by host, use verified corporate infrastructure
-      status = 'VALID';
-      score += 25;
-      reason = `Corporate mail server verified (${dnsResult.mailProvider}).`;
+    switch (smtpResult.status) {
+      case 'VALID':
+        score += 30;
+        reason = 'Mailbox confirmed active via real-time SMTP handshake.';
+        break;
+      case 'CATCH_ALL':
+        score += 15;
+        reason = 'Domain mail server accepts all recipient addresses (Catch-All configured).';
+        break;
+      case 'PROTECTED':
+        score += 15;
+        reason = smtpResult.error === 'HOST_PORT25_BLOCKED'
+          ? `Corporate mail infrastructure active (${dnsResult.mailProvider}); direct SMTP probing restricted.`
+          : `Enterprise spam firewall protected (${dnsResult.mailProvider}).`;
+        break;
+      case 'INVALID':
+        score = 0;
+        reason = smtpResult.error || 'Mailbox rejected by mail server (User not found).';
+        break;
     }
   } else {
     score += 20;
