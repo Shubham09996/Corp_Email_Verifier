@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "c1f7a83d-6b8f-4d92-bf39-2a9f1b40283b",
     "name": "Corporate Email Verification API (Bharat API Cloud)",
-    "description": "Postman Collection for Corporate Email Verification API with Bharat API Cloud credentials.",
+    "description": "Postman Collection for Corporate Email Verification API. Only email and credentials required.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -24,7 +24,7 @@
   ],
   "item": [
     {
-      "name": "1. Verify Single Corporate Email",
+      "name": "1. Verify Email (Simple)",
       "request": {
         "method": "POST",
         "header": [
@@ -43,7 +43,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"email\": \"employee@microsoft.com\",\n  \"referenceId\": \"BAC_REQ_1001\",\n  \"options\": {\n    \"allowFreeDomains\": false,\n    \"checkSmtp\": true,\n    \"checkDomainAge\": true\n  }\n}"
+          "raw": "{\n  \"email\": \"employee@microsoft.com\"\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/api/verify",
@@ -53,7 +53,7 @@
       }
     },
     {
-      "name": "2. Verify Personal Email (Rejection Test)",
+      "name": "2. Batch Verify Emails",
       "request": {
         "method": "POST",
         "header": [
@@ -72,36 +72,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"email\": \"john.doe@gmail.com\",\n  \"options\": {\n    \"allowFreeDomains\": false\n  }\n}"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/verify",
-          "host": ["{{baseUrl}}"],
-          "path": ["api", "verify"]
-        }
-      }
-    },
-    {
-      "name": "3. Batch Verify Emails List",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-Project-Id",
-            "value": "{{projectId}}"
-          },
-          {
-            "key": "X-API-Key",
-            "value": "{{apiKey}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"emails\": [\n    \"contact@stripe.com\",\n    \"hr@microsoft.com\",\n    \"user@gmail.com\",\n    \"temp@yopmail.com\"\n  ],\n  \"concurrency\": 5,\n  \"options\": {\n    \"allowFreeDomains\": false\n  }\n}"
+          "raw": "{\n  \"emails\": [\n    \"contact@stripe.com\",\n    \"user@gmail.com\"\n  ]\n}"
         },
         "url": {
           "raw": "{{baseUrl}}/api/verify/batch",
@@ -111,7 +82,7 @@
       }
     },
     {
-      "name": "4. Check Domain Age & Legitimacy",
+      "name": "3. Domain Age Lookup",
       "request": {
         "method": "POST",
         "header": [
@@ -140,7 +111,7 @@
       }
     },
     {
-      "name": "5. API Health Check",
+      "name": "4. Health Check",
       "request": {
         "method": "GET",
         "header": [],
