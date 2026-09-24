@@ -5,7 +5,7 @@ import { verifyEmail } from '../services/emailVerificationService.js';
 
 async function runAllTests() {
   console.log('====================================================');
-  console.log('🧪 Starting High-Precision Verification Tests');
+  console.log('🧪 Starting 3-Status Verification Engine Tests');
   console.log('====================================================\n');
 
   let passed = 0;
@@ -21,7 +21,7 @@ async function runAllTests() {
     }
   }
 
-  // --- Phase 1: Synthetic & Dummy Username Detection ---
+  // --- Phase 1: Synthetic & Fake Pattern Detection ---
   console.log('--- Testing Synthetic & Fake Pattern Detection ---');
   
   const fake1 = isSuspiciousUsername('fake123');
@@ -45,26 +45,34 @@ async function runAllTests() {
   const dnsMicrosoft = await resolveDnsDetails('microsoft.com');
   assert(dnsMicrosoft.hasMxRecords && dnsMicrosoft.mailProvider.includes('Microsoft'), 'Identifies Microsoft 365');
 
-  // --- Phase 3: Strict End-to-End Validation ---
-  console.log('\n--- Testing Strict End-to-End Rejection & Deliverability ---');
+  // --- Phase 3: 3-Status Rejection & Deliverability ---
+  console.log('\n--- Testing 3-Status Pipeline (VALID / INVALID / CATCH_ALL) ---');
   
-  // Fake user on real domain -> MUST be INVALID
+  // Fake user on real domain -> INVALID
   const resFakeOnRealDomain = await verifyEmail('fake123456@stripe.com');
-  assert(resFakeOnRealDomain.status === 'INVALID', 'Fake username on real domain (fake123456@stripe.com) is rejected as INVALID');
-  console.log(`   fake123456@stripe.com status: ${resFakeOnRealDomain.status}, Reason: ${resFakeOnRealDomain.reason}`);
+  assert(resFakeOnRealDomain.status === 'INVALID', 'Fake username on real domain (fake123456@stripe.com) is INVALID');
+  console.log(`   fake123456@stripe.com status: ${resFakeOnRealDomain.status}`);
 
+  // Fake keyboard smash -> INVALID
   const resKeyboardSmash = await verifyEmail('asdfghjkl123@microsoft.com');
-  assert(resKeyboardSmash.status === 'INVALID', 'Keyboard smash on real domain is rejected as INVALID');
+  assert(resKeyboardSmash.status === 'INVALID', 'Keyboard smash is INVALID');
 
+  // Gmail -> INVALID
   const resGmail = await verifyEmail('user@gmail.com', { allowFreeDomains: false });
-  assert(resGmail.status === 'INVALID', 'Gmail rejected for corporate email');
+  assert(resGmail.status === 'INVALID', 'Gmail is INVALID for corporate email');
 
+  // Disposable -> INVALID
   const resDisposable = await verifyEmail('temp@yopmail.com');
-  assert(resDisposable.status === 'INVALID', 'Disposable email rejected as INVALID');
+  assert(resDisposable.status === 'INVALID', 'Disposable is INVALID');
 
+  // Real corporate email -> VALID or CATCH_ALL
   const resStripe = await verifyEmail('contact@stripe.com');
-  assert(resStripe.isDeliverable && resStripe.isCorporate, 'Real corporate contact@stripe.com is processed');
-  console.log(`   contact@stripe.com status: ${resStripe.status}, Provider: ${resStripe.mailProvider}, Score: ${resStripe.score}/100`);
+  assert(resStripe.status === 'CATCH_ALL' || resStripe.status === 'VALID', 'Stripe corporate email is CATCH_ALL or VALID');
+  console.log(`   contact@stripe.com status: ${resStripe.status}, Score: ${resStripe.score}/100`);
+
+  const resMicrosoft = await verifyEmail('employee@microsoft.com');
+  assert(resMicrosoft.status === 'VALID' || resMicrosoft.status === 'CATCH_ALL', 'Microsoft employee email is VALID or CATCH_ALL');
+  console.log(`   employee@microsoft.com status: ${resMicrosoft.status}, Score: ${resMicrosoft.score}/100`);
 
   console.log('\n====================================================');
   console.log(`🏁 Test Summary: ${passed} Passed, ${failed} Failed`);

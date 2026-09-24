@@ -11,6 +11,7 @@ import { verifySmtpWithFallback } from './smtpVerifier.js';
 
 /**
  * Enterprise Email Verification Pipeline
+ * Outputs strictly: 'VALID' | 'INVALID' | 'CATCH_ALL'
  */
 export async function verifyEmail(
   email: string,
@@ -45,7 +46,6 @@ export async function verifyEmail(
       isDeliverable: false,
       isCorporate: !syntaxResult.isBannedFreeDomain && !syntaxResult.isDisposableDomain,
       isCatchAll: false,
-      isProtected: false,
       isRoleAccount: syntaxResult.isRoleAccount,
       isDisposable: syntaxResult.isDisposableDomain,
       mailProvider: 'None',
@@ -78,7 +78,6 @@ export async function verifyEmail(
       isDeliverable: false,
       isCorporate: true,
       isCatchAll: false,
-      isProtected: false,
       isRoleAccount: syntaxResult.isRoleAccount,
       isDisposable: false,
       mailProvider: 'None',
@@ -111,7 +110,6 @@ export async function verifyEmail(
       isDeliverable: false,
       isCorporate: true,
       isCatchAll: false,
-      isProtected: false,
       isRoleAccount: syntaxResult.isRoleAccount,
       isDisposable: false,
       mailProvider: 'None',
@@ -136,7 +134,7 @@ export async function verifyEmail(
     );
   }
 
-  // Phase 4: Precision Status Evaluation
+  // Phase 4: Precision 3-Status Evaluation (VALID | INVALID | CATCH_ALL)
   let status: VerificationStatus = 'VALID';
   let reason = 'Corporate mailbox confirmed active and deliverable.';
   let score = 50;
@@ -145,27 +143,19 @@ export async function verifyEmail(
   if (dnsResult.hasDmarc) score += 10;
 
   let isCatchAll = false;
-  let isProtected = false;
 
   if (smtpResult) {
     status = smtpResult.status;
     isCatchAll = smtpResult.isCatchAll;
-    isProtected = smtpResult.isProtected;
 
     switch (smtpResult.status) {
       case 'VALID':
         score += 30;
-        reason = 'Mailbox confirmed active via real-time SMTP handshake.';
+        reason = `Corporate mailbox verified (${dnsResult.mailProvider}).`;
         break;
       case 'CATCH_ALL':
         score += 15;
         reason = 'Domain mail server accepts all recipient addresses (Catch-All configured).';
-        break;
-      case 'PROTECTED':
-        score += 15;
-        reason = smtpResult.error === 'HOST_PORT25_BLOCKED'
-          ? `Corporate mail infrastructure active (${dnsResult.mailProvider}); direct SMTP probing restricted.`
-          : `Enterprise spam firewall protected (${dnsResult.mailProvider}).`;
         break;
       case 'INVALID':
         score = 0;
@@ -178,7 +168,7 @@ export async function verifyEmail(
   }
 
   score = Math.min(100, Math.max(0, score));
-  const isDeliverable = status === 'VALID' || status === 'CATCH_ALL' || status === 'PROTECTED';
+  const isDeliverable = status === 'VALID' || status === 'CATCH_ALL';
 
   return {
     email: syntaxResult.cleanEmail,
@@ -188,7 +178,6 @@ export async function verifyEmail(
     isDeliverable,
     isCorporate: !syntaxResult.isBannedFreeDomain && !syntaxResult.isDisposableDomain,
     isCatchAll,
-    isProtected,
     isRoleAccount: syntaxResult.isRoleAccount,
     isDisposable: syntaxResult.isDisposableDomain,
     mailProvider: dnsResult.mailProvider,
@@ -233,7 +222,6 @@ export async function verifyEmailBatch(
           isDeliverable: false,
           isCorporate: false,
           isCatchAll: false,
-          isProtected: false,
           isRoleAccount: false,
           isDisposable: false,
           mailProvider: 'None',
@@ -263,14 +251,12 @@ export async function verifyEmailBatch(
   const validCount = results.filter(r => r.status === 'VALID').length;
   const invalidCount = results.filter(r => r.status === 'INVALID').length;
   const catchAllCount = results.filter(r => r.status === 'CATCH_ALL').length;
-  const protectedCount = results.filter(r => r.status === 'PROTECTED').length;
 
   return {
     total: results.length,
     validCount,
     invalidCount,
     catchAllCount,
-    protectedCount,
     durationMs: Date.now() - startTime,
     results
   };

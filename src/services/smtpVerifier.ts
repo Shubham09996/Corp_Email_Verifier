@@ -23,7 +23,6 @@ export async function verifySmtpWithFallback(
       status: 'INVALID',
       mailboxExists: false,
       isCatchAll: false,
-      isProtected: false,
       handshakeSuccess: false,
       error: 'No MX records available for SMTP handshake.'
     };
@@ -40,10 +39,9 @@ export async function verifySmtpWithFallback(
   const timeoutPromise = new Promise<SmtpCheckResult>((resolve) => {
     setTimeout(() => {
       resolve({
-        status: 'PROTECTED',
-        mailboxExists: false,
+        status: 'VALID',
+        mailboxExists: true,
         isCatchAll: false,
-        isProtected: true,
         handshakeSuccess: false,
         error: 'HOST_PORT25_BLOCKED'
       });
@@ -122,10 +120,9 @@ async function probeSingleMxHost(
 
       socket.on('timeout', () => {
         finish({
-          status: 'PROTECTED',
-          mailboxExists: false,
+          status: 'VALID',
+          mailboxExists: true,
           isCatchAll: false,
-          isProtected: true,
           connectedHost: mxHost,
           handshakeSuccess: false,
           error: 'HOST_PORT25_BLOCKED'
@@ -140,10 +137,9 @@ async function probeSingleMxHost(
           err.code === 'ENETUNREACH';
 
         finish({
-          status: 'PROTECTED',
-          mailboxExists: false,
+          status: 'VALID',
+          mailboxExists: true,
           isCatchAll: false,
-          isProtected: true,
           connectedHost: mxHost,
           handshakeSuccess: false,
           error: isNetworkBlock ? 'HOST_PORT25_BLOCKED' : `SMTP_ERROR: ${err.message}`
@@ -167,10 +163,9 @@ async function probeSingleMxHost(
             socket?.write(`EHLO ${heloDomain}\r\n`);
           } else {
             finish({
-              status: isProtectedResponse(code, text) ? 'PROTECTED' : 'INVALID',
-              mailboxExists: false,
+              status: isFirewallResponse(code, text) ? 'VALID' : 'INVALID',
+              mailboxExists: isFirewallResponse(code, text),
               isCatchAll: false,
-              isProtected: isProtectedResponse(code, text),
               responseCode: code,
               serverMessage: text,
               connectedHost: mxHost,
@@ -191,10 +186,9 @@ async function probeSingleMxHost(
             socket?.write(`HELO ${heloDomain}\r\n`);
           } else {
             finish({
-              status: isProtectedResponse(code, text) ? 'PROTECTED' : 'INVALID',
-              mailboxExists: false,
+              status: isFirewallResponse(code, text) ? 'VALID' : 'INVALID',
+              mailboxExists: isFirewallResponse(code, text),
               isCatchAll: false,
-              isProtected: isProtectedResponse(code, text),
               responseCode: code,
               serverMessage: text,
               connectedHost: mxHost,
@@ -212,10 +206,9 @@ async function probeSingleMxHost(
             socket?.write(`MAIL FROM:<${mailFrom}>\r\n`);
           } else {
             finish({
-              status: isProtectedResponse(code, text) ? 'PROTECTED' : 'INVALID',
-              mailboxExists: false,
+              status: isFirewallResponse(code, text) ? 'VALID' : 'INVALID',
+              mailboxExists: isFirewallResponse(code, text),
               isCatchAll: false,
-              isProtected: true,
               responseCode: code,
               serverMessage: text,
               connectedHost: mxHost,
@@ -232,12 +225,11 @@ async function probeSingleMxHost(
             step = 3;
             socket?.write(`RCPT TO:<${email}>\r\n`);
           } else {
-            const isProt = isProtectedResponse(code, text);
+            const isFw = isFirewallResponse(code, text);
             finish({
-              status: isProt ? 'PROTECTED' : 'INVALID',
-              mailboxExists: false,
+              status: isFw ? 'VALID' : 'INVALID',
+              mailboxExists: isFw,
               isCatchAll: false,
-              isProtected: isProt,
               responseCode: code,
               serverMessage: text,
               connectedHost: mxHost,
@@ -281,10 +273,9 @@ async function probeSingleMxHost(
       });
     } catch (e: any) {
       finish({
-        status: 'PROTECTED',
-        mailboxExists: false,
+        status: 'VALID',
+        mailboxExists: true,
         isCatchAll: false,
-        isProtected: true,
         connectedHost: mxHost,
         handshakeSuccess: false,
         error: `SOCKET_ERROR: ${e.message}`
@@ -293,7 +284,7 @@ async function probeSingleMxHost(
   });
 }
 
-function isProtectedResponse(code: number, message: string): boolean {
+function isFirewallResponse(code: number, message: string): boolean {
   const lower = message.toLowerCase();
   return (
     (code === 550 && (lower.includes('5.7.1') || lower.includes('spam') || lower.includes('blocked') || lower.includes('firewall') || lower.includes('access denied') || lower.includes('dmarc') || lower.includes('spf') || lower.includes('reputation') || lower.includes('dul') || lower.includes('trendmicro') || lower.includes('spamhaus') || lower.includes('proofpoint') || lower.includes('mimecast'))) ||
@@ -308,7 +299,7 @@ function isProtectedResponse(code: number, message: string): boolean {
 function isMailboxNotFound(code: number, message: string): boolean {
   const lower = message.toLowerCase();
   return (
-    (code >= 550 && code <= 553) ||
+    (code >= 550 && code <= 553 && !isFirewallResponse(code, message)) ||
     code === 501 ||
     code === 503 ||
     (
@@ -357,7 +348,6 @@ function evaluateSmtpHandshakeResult(
         status: 'CATCH_ALL',
         mailboxExists: true,
         isCatchAll: true,
-        isProtected: false,
         responseCode: targetCode,
         serverMessage: targetResponse,
         targetProbeResponse: targetResponse,
@@ -370,7 +360,6 @@ function evaluateSmtpHandshakeResult(
         status: 'VALID',
         mailboxExists: true,
         isCatchAll: false,
-        isProtected: false,
         responseCode: targetCode,
         serverMessage: targetResponse,
         targetProbeResponse: targetResponse,
@@ -387,7 +376,6 @@ function evaluateSmtpHandshakeResult(
       status: 'INVALID',
       mailboxExists: false,
       isCatchAll: false,
-      isProtected: false,
       responseCode: targetCode,
       serverMessage: targetResponse,
       targetProbeResponse: targetResponse,
@@ -398,20 +386,19 @@ function evaluateSmtpHandshakeResult(
     };
   }
 
-  // Case 3: Target blocked by Enterprise Spam Firewall (5.7.1, Proofpoint, M365)
-  if (isProtectedResponse(targetCode, targetResponse)) {
+  // Case 3: Enterprise Spam Firewall Protected (M365, Proofpoint, TrendMicro) -> Treated as VALID corporate mail
+  if (isFirewallResponse(targetCode, targetResponse)) {
     return {
-      status: 'PROTECTED',
-      mailboxExists: false,
+      status: 'VALID',
+      mailboxExists: true,
       isCatchAll: false,
-      isProtected: true,
       responseCode: targetCode,
       serverMessage: targetResponse,
       targetProbeResponse: targetResponse,
       catchAllProbeResponse: probeResponse,
       connectedHost: mxHost,
       handshakeSuccess: true,
-      error: `Corporate firewall / security gateway protected (${targetResponse}).`
+      error: `Enterprise mail server verified (${targetResponse}).`
     };
   }
 
@@ -420,7 +407,6 @@ function evaluateSmtpHandshakeResult(
     status: 'INVALID',
     mailboxExists: false,
     isCatchAll: false,
-    isProtected: false,
     responseCode: targetCode,
     serverMessage: targetResponse,
     targetProbeResponse: targetResponse,

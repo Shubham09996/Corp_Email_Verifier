@@ -19,12 +19,8 @@
       --text-muted: #94a3b8;
       --success: #10b981;
       --success-bg: rgba(16, 185, 129, 0.12);
-      --warning: #f59e0b;
-      --warning-bg: rgba(245, 158, 11, 0.12);
       --danger: #ef4444;
       --danger-bg: rgba(239, 68, 68, 0.12);
-      --info: #3b82f6;
-      --info-bg: rgba(59, 130, 246, 0.12);
       --purple: #8b5cf6;
       --purple-bg: rgba(139, 92, 246, 0.12);
     }
@@ -163,7 +159,7 @@
 
     .input-row { display: flex; gap: 12px; }
 
-    input[type="text"], input[type="email"], textarea {
+    input[type="text"], textarea {
       flex: 1;
       background: rgba(0, 0, 0, 0.35);
       border: 1px solid var(--card-border);
@@ -223,7 +219,6 @@
 
     .badge-VALID { background: var(--success-bg); color: var(--success); border: 1px solid rgba(16,185,129,0.3); }
     .badge-CATCH_ALL { background: var(--purple-bg); color: var(--purple); border: 1px solid rgba(139,92,246,0.3); }
-    .badge-PROTECTED { background: var(--warning-bg); color: var(--warning); border: 1px solid rgba(245,158,11,0.3); }
     .badge-INVALID { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
 
     .phases-grid {
@@ -317,7 +312,7 @@
       <div class="card">
         <h2 style="font-size: 1.3rem; margin-bottom: 16px;">Verify Corporate Email</h2>
         <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px;">
-          Multi-layer verification: RFC Syntax & Typo Detection &rarr; Banned Domain / Disposable Filter &rarr; Multi-Tier MX & Security (SPF/DMARC) &rarr; Real-Time Port 25 SMTP Handshake & Multi-MX Probe.
+          Clean 3-Status Engine: <strong>VALID</strong>, <strong>INVALID</strong>, and <strong>CATCH_ALL</strong>.
         </p>
 
         <form id="singleVerifyForm" onsubmit="handleSingleVerify(event)">
@@ -346,7 +341,7 @@
         <div class="phases-grid">
           <div class="phase-card">
             <div class="phase-title">
-              <span>Syntax & Role Account</span>
+              <span>Syntax & Role</span>
               <span id="p1Icon"></span>
             </div>
             <div id="p1Val" class="phase-value"></div>
@@ -373,7 +368,7 @@
 
           <div class="phase-card">
             <div class="phase-title">
-              <span>SMTP Mailbox Handshake</span>
+              <span>Status Verdict</span>
               <span id="p4Icon"></span>
             </div>
             <div id="p4Val" class="phase-value"></div>
@@ -429,7 +424,7 @@
       <div class="card">
         <h2 style="font-size: 1.3rem; margin-bottom: 16px;">API Usage for Bharat API Cloud</h2>
         <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
-          Pass <code>client_id</code>, <code>api_key</code>, and <code>email</code> directly in the JSON body:
+          Possible status outcomes: <code>VALID</code>, <code>INVALID</code>, and <code>CATCH_ALL</code>.
         </p>
 
         <pre><code>curl -X POST http://localhost:3000/api/verify \
@@ -482,7 +477,7 @@
         badge.className = 'badge badge-' + data.status;
         badge.innerText = data.status + ' (' + data.score + '/100)';
 
-        // Card 1: Syntax & Role
+        // Card 1: Syntax
         document.getElementById('p1Val').innerText = data.details.syntax.isValid ? (data.isRoleAccount ? 'Role Account' : 'Valid Corporate') : 'Invalid';
         document.getElementById('p1Detail').innerText = data.didYouMean ? ('Suggestion: ' + data.didYouMean) : (data.details.syntax.error || 'Clean RFC format');
         document.getElementById('p1Icon').innerText = data.details.syntax.isValid ? '✅' : '❌';
@@ -495,16 +490,10 @@
         document.getElementById('p3Security').innerText = (data.details.dns.hasSpf ? 'SPF ✅' : 'SPF ❌') + ' | ' + (data.details.dns.hasDmarc ? 'DMARC ✅' : 'DMARC ❌');
         document.getElementById('p3Detail').innerText = data.details.dns.hasDmarc ? 'Domain security policies active' : 'Basic mail configuration';
 
-        // Card 4: SMTP Handshake
-        if (data.details.smtp) {
-          document.getElementById('p4Val').innerText = data.details.smtp.status;
-          document.getElementById('p4Detail').innerText = data.details.smtp.serverMessage || data.details.smtp.error || 'Probe completed';
-          document.getElementById('p4Icon').innerText = data.details.smtp.status === 'VALID' ? '✅' : (data.details.smtp.status === 'INVALID' ? '❌' : '🛡️');
-        } else {
-          document.getElementById('p4Val').innerText = 'Skipped';
-          document.getElementById('p4Detail').innerText = 'SMTP check bypassed';
-          document.getElementById('p4Icon').innerText = '⏸️';
-        }
+        // Card 4: Status Verdict
+        document.getElementById('p4Val').innerText = data.status;
+        document.getElementById('p4Detail').innerText = data.reason || 'Verification complete';
+        document.getElementById('p4Icon').innerText = data.status === 'VALID' ? '✅' : (data.status === 'CATCH_ALL' ? '🟣' : '❌');
 
         document.getElementById('singleRawJson').innerText = JSON.stringify(json, null, 2);
       } catch (err) {
@@ -542,7 +531,7 @@
 
         document.getElementById('batchResultContainer').style.display = 'block';
         document.getElementById('batchSummaryText').innerText = 
-          'Total: ' + batch.total + ' | Valid: ' + batch.validCount + ' | Catch-All: ' + batch.catchAllCount + ' | Protected: ' + batch.protectedCount + ' | Invalid: ' + batch.invalidCount;
+          'Total: ' + batch.total + ' | Valid: ' + batch.validCount + ' | Catch-All: ' + batch.catchAllCount + ' | Invalid: ' + batch.invalidCount;
 
         const tbody = document.getElementById('batchTableBody');
         tbody.innerHTML = '';

@@ -1,4 +1,4 @@
-export type VerificationStatus = 'VALID' | 'CATCH_ALL' | 'PROTECTED' | 'INVALID';
+export type VerificationStatus = 'VALID' | 'INVALID' | 'CATCH_ALL';
 
 export interface MxRecord {
   exchange: string;
@@ -34,7 +34,6 @@ export interface SmtpCheckResult {
   status: VerificationStatus;
   mailboxExists: boolean;
   isCatchAll: boolean;
-  isProtected: boolean;
   responseCode?: number;
   serverMessage?: string;
   targetProbeResponse?: string;
@@ -59,7 +58,6 @@ export interface VerificationResult {
   isDeliverable: boolean;
   isCorporate: boolean;
   isCatchAll: boolean;
-  isProtected: boolean;
   isRoleAccount: boolean;
   isDisposable: boolean;
   mailProvider: string;
@@ -78,7 +76,6 @@ export interface BatchVerificationResult {
   validCount: number;
   invalidCount: number;
   catchAllCount: number;
-  protectedCount: number;
   durationMs: number;
   results: VerificationResult[];
 }
