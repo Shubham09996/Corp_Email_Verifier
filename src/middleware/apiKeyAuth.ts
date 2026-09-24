@@ -9,8 +9,8 @@ export interface ProjectAuthenticatedRequest extends Request {
  * Middleware for Project-Based API Key Authentication.
  * 
  * Supports:
- * - Direct Project Header: X-Project-Id + X-API-Key
- * - Master API Key: X-API-Key
+ * - JSON Body: { "api_key": "...", "client_id": "..." } or { "apiKey": "...", "projectId": "..." }
+ * - Headers: X-Project-Id (or X-Client-Id) + X-API-Key
  * - Bearer Token: Authorization: Bearer <key>
  */
 export function projectAuth(
@@ -25,11 +25,24 @@ export function projectAuth(
     return next();
   }
 
-  const projectId = (req.headers['x-project-id'] || req.headers['x-client-id'] || req.body?.projectId) as string | undefined;
-  const apiKeyHeader = req.headers['x-api-key'] as string | undefined;
-  const authHeader = req.headers['authorization'] as string | undefined;
+  // Extract Project/Client ID from Body or Headers
+  const projectId = (
+    req.body?.client_id ||
+    req.body?.clientId ||
+    req.body?.project_id ||
+    req.body?.projectId ||
+    req.headers['x-project-id'] ||
+    req.headers['x-client-id']
+  ) as string | undefined;
 
-  let providedKey = apiKeyHeader;
+  // Extract API Key from Body or Headers
+  let providedKey = (
+    req.body?.api_key ||
+    req.body?.apiKey ||
+    req.headers['x-api-key']
+  ) as string | undefined;
+
+  const authHeader = req.headers['authorization'] as string | undefined;
   if (!providedKey && authHeader && authHeader.startsWith('Bearer ')) {
     providedKey = authHeader.substring(7).trim();
   }
@@ -38,7 +51,7 @@ export function projectAuth(
     res.status(401).json({
       success: false,
       error: 'Unauthorized: Missing API Key.',
-      hint: 'Please provide X-Project-Id and X-API-Key in request headers.'
+      hint: 'Please provide api_key in request body or X-API-Key in request headers.'
     });
     return;
   }
@@ -58,7 +71,7 @@ export function projectAuth(
     }
   }
 
-  // 3. Check if key belongs to any registered project
+  // 3. Check if key matches any registered project in pool
   for (const [id, key] of config.projectKeys.entries()) {
     if (key === providedKey) {
       req.projectId = id;
