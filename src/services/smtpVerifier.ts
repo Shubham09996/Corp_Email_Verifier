@@ -10,7 +10,7 @@ interface SmtpProbeOptions {
 }
 
 /**
- * Verify mailbox with multi-MX server fallback.
+ * Fast mailbox verification on primary MX with rapid timeout guard.
  */
 export async function verifySmtpWithFallback(
   email: string,
@@ -29,28 +29,29 @@ export async function verifySmtpWithFallback(
     };
   }
 
-  const maxAttempts = Math.min(2, mxRecords.length);
-  let lastResult: SmtpCheckResult | null = null;
+  const primaryMx = mxRecords[0].exchange;
+  const timeoutMs = options?.timeoutMs || config.smtp.timeoutMs || 2000;
 
-  for (let i = 0; i < maxAttempts; i++) {
-    const mxHost = mxRecords[i].exchange;
-    const result = await probeSingleMxHost(email, mxHost, domain, options);
+  // Enforce strict fast timeout promise race
+  const probePromise = probeSingleMxHost(email, primaryMx, domain, {
+    ...options,
+    timeoutMs
+  });
 
-    if (result.handshakeSuccess || result.status === 'VALID' || result.status === 'CATCH_ALL') {
-      return result;
-    }
+  const timeoutPromise = new Promise<SmtpCheckResult>((resolve) => {
+    setTimeout(() => {
+      resolve({
+        status: 'VALID',
+        mailboxExists: true,
+        isCatchAll: false,
+        isProtected: false,
+        handshakeSuccess: false,
+        error: 'HOST_PORT25_BLOCKED'
+      });
+    }, timeoutMs + 200);
+  });
 
-    lastResult = result;
-  }
-
-  return lastResult || {
-    status: 'VALID',
-    mailboxExists: true,
-    isCatchAll: false,
-    isProtected: false,
-    handshakeSuccess: false,
-    error: 'HOST_PORT25_BLOCKED'
-  };
+  return Promise.race([probePromise, timeoutPromise]);
 }
 
 /**
@@ -64,7 +65,7 @@ async function probeSingleMxHost(
 ): Promise<SmtpCheckResult> {
   const heloDomain = options?.heloDomain || config.smtp.heloDomain;
   const mailFrom = options?.mailFrom || config.smtp.mailFrom;
-  const timeoutMs = options?.timeoutMs || config.smtp.timeoutMs;
+  const timeoutMs = options?.timeoutMs || config.smtp.timeoutMs || 2000;
 
   const randomProbeMail = `verify_probe_${Date.now()}_${crypto.randomBytes(3).toString('hex')}@${domain}`;
 
@@ -121,7 +122,6 @@ async function probeSingleMxHost(
       socket.setTimeout(timeoutMs);
 
       socket.on('timeout', () => {
-        // Port 25 blocked by cloud host (Render/AWS) or firewall
         finish({
           status: 'VALID',
           mailboxExists: true,

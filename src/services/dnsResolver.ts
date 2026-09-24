@@ -14,7 +14,7 @@ const customResolver = new dns.promises.Resolver();
 try {
   customResolver.setServers(config.dns.servers);
 } catch {
-  // Use system default if setting servers fails
+  // fallback to system default
 }
 
 /**
@@ -68,148 +68,142 @@ export function identifyMailProvider(mxRecords: MxRecord[]): string {
   return 'Custom Corporate Mail Server';
 }
 
-/**
- * Resolve MX records with 3-tier fallback (Native, Google DoH, Cloudflare DoH)
- * and perform SPF & DMARC verification.
- */
-export async function resolveDnsDetails(domain: string): Promise<DnsCheckResult> {
-  const cleanDomain = domain.toLowerCase().trim();
-
-  // Check cache
-  const cached = dnsCache.get(cleanDomain);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.data;
-  }
-
-  let mxRecords: MxRecord[] = [];
-  let resolutionSource: 'NATIVE_DNS' | 'GOOGLE_DOH' | 'CLOUDFLARE_DOH' | 'NONE' = 'NONE';
-
-  // Tier 1: Native DNS
+async function resolveMxWithDoHFallback(cleanDomain: string): Promise<{ mxRecords: MxRecord[]; source: 'NATIVE_DNS' | 'GOOGLE_DOH' | 'CLOUDFLARE_DOH' | 'NONE' }> {
+  // 1. Native DNS
   try {
     const addrs = await customResolver.resolveMx(cleanDomain);
     if (addrs && addrs.length > 0) {
-      mxRecords = addrs
+      const sorted = addrs
         .map(r => ({ exchange: r.exchange.trim().replace(/\.$/, ''), priority: r.priority }))
         .sort((a, b) => a.priority - b.priority);
-      resolutionSource = 'NATIVE_DNS';
+      return { mxRecords: sorted, source: 'NATIVE_DNS' };
     }
   } catch {
-    // Fallthrough to Tier 2
+    // fallback
   }
 
-  // Tier 2: Google DoH
-  if (mxRecords.length === 0) {
-    try {
-      const resp = await axios.get(
-        `https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=MX`,
-        { timeout: config.dns.timeoutMs }
-      );
-      if (resp.data?.Answer && Array.isArray(resp.data.Answer)) {
-        for (const item of resp.data.Answer) {
-          if (item.type === 15 && item.data) {
-            const parts = item.data.trim().split(/\s+/);
-            if (parts.length >= 2) {
-              const priority = parseInt(parts[0], 10) || 10;
-              const exchange = parts[1].replace(/\.$/, '');
-              mxRecords.push({ exchange, priority });
-            }
+  // 2. Google DoH
+  try {
+    const resp = await axios.get(
+      `https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=MX`,
+      { timeout: config.dns.timeoutMs }
+    );
+    if (resp.data?.Answer && Array.isArray(resp.data.Answer)) {
+      const mxList: MxRecord[] = [];
+      for (const item of resp.data.Answer) {
+        if (item.type === 15 && item.data) {
+          const parts = item.data.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            mxList.push({ priority: parseInt(parts[0], 10) || 10, exchange: parts[1].replace(/\.$/, '') });
           }
         }
-        if (mxRecords.length > 0) {
-          mxRecords.sort((a, b) => a.priority - b.priority);
-          resolutionSource = 'GOOGLE_DOH';
-        }
       }
-    } catch {
-      // Fallthrough to Tier 3
+      if (mxList.length > 0) {
+        mxList.sort((a, b) => a.priority - b.priority);
+        return { mxRecords: mxList, source: 'GOOGLE_DOH' };
+      }
     }
+  } catch {
+    // fallback
   }
 
-  // Tier 3: Cloudflare DoH
-  if (mxRecords.length === 0) {
-    try {
-      const resp = await axios.get(
-        `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(cleanDomain)}&type=MX`,
-        {
-          headers: { Accept: 'application/dns-json' },
-          timeout: config.dns.timeoutMs
-        }
-      );
-      if (resp.data?.Answer && Array.isArray(resp.data.Answer)) {
-        for (const item of resp.data.Answer) {
-          if (item.type === 15 && item.data) {
-            const parts = item.data.trim().split(/\s+/);
-            if (parts.length >= 2) {
-              const priority = parseInt(parts[0], 10) || 10;
-              const exchange = parts[1].replace(/\.$/, '');
-              mxRecords.push({ exchange, priority });
-            }
+  // 3. Cloudflare DoH
+  try {
+    const resp = await axios.get(
+      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(cleanDomain)}&type=MX`,
+      { headers: { Accept: 'application/dns-json' }, timeout: config.dns.timeoutMs }
+    );
+    if (resp.data?.Answer && Array.isArray(resp.data.Answer)) {
+      const mxList: MxRecord[] = [];
+      for (const item of resp.data.Answer) {
+        if (item.type === 15 && item.data) {
+          const parts = item.data.trim().split(/\s+/);
+          if (parts.length >= 2) {
+            mxList.push({ priority: parseInt(parts[0], 10) || 10, exchange: parts[1].replace(/\.$/, '') });
           }
         }
-        if (mxRecords.length > 0) {
-          mxRecords.sort((a, b) => a.priority - b.priority);
-          resolutionSource = 'CLOUDFLARE_DOH';
-        }
       }
-    } catch {
-      // All tiers failed
+      if (mxList.length > 0) {
+        mxList.sort((a, b) => a.priority - b.priority);
+        return { mxRecords: mxList, source: 'CLOUDFLARE_DOH' };
+      }
     }
+  } catch {
+    // fail
   }
 
-  // Check SPF & DMARC records
-  let hasSpf = false;
-  let spfRecord: string | null = null;
-  let hasDmarc = false;
-  let dmarcRecord: string | null = null;
+  return { mxRecords: [], source: 'NONE' };
+}
 
+async function resolveSpf(cleanDomain: string): Promise<{ hasSpf: boolean; spfRecord: string | null }> {
   try {
     const txtRecords = await customResolver.resolveTxt(cleanDomain);
     if (txtRecords && Array.isArray(txtRecords)) {
       for (const record of txtRecords) {
         const joined = Array.isArray(record) ? record.join('') : record;
         if (joined.toLowerCase().startsWith('v=spf1')) {
-          hasSpf = true;
-          spfRecord = joined;
-          break;
+          return { hasSpf: true, spfRecord: joined };
         }
       }
     }
   } catch {
-    // SPF query ignored
+    // ignore
   }
+  return { hasSpf: false, spfRecord: null };
+}
 
+async function resolveDmarc(cleanDomain: string): Promise<{ hasDmarc: boolean; dmarcRecord: string | null }> {
   try {
     const dmarcTxt = await customResolver.resolveTxt(`_dmarc.${cleanDomain}`);
     if (dmarcTxt && Array.isArray(dmarcTxt)) {
       for (const record of dmarcTxt) {
         const joined = Array.isArray(record) ? record.join('') : record;
         if (joined.toLowerCase().startsWith('v=dmarc1')) {
-          hasDmarc = true;
-          dmarcRecord = joined;
-          break;
+          return { hasDmarc: true, dmarcRecord: joined };
         }
       }
     }
   } catch {
-    // DMARC query ignored
+    // ignore
+  }
+  return { hasDmarc: false, dmarcRecord: null };
+}
+
+/**
+ * Parallel DNS resolution for maximum speed.
+ */
+export async function resolveDnsDetails(domain: string): Promise<DnsCheckResult> {
+  const cleanDomain = domain.toLowerCase().trim();
+
+  // 1. Cache hit -> Instant (< 1ms)
+  const cached = dnsCache.get(cleanDomain);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.data;
   }
 
+  // 2. Parallel Resolution (MX + SPF + DMARC at the exact same time)
+  const [mxResult, spfResult, dmarcResult] = await Promise.all([
+    resolveMxWithDoHFallback(cleanDomain),
+    resolveSpf(cleanDomain),
+    resolveDmarc(cleanDomain)
+  ]);
+
   const result: DnsCheckResult = {
-    hasMxRecords: mxRecords.length > 0,
-    mxRecords,
-    primaryMx: mxRecords[0]?.exchange || null,
-    mailProvider: identifyMailProvider(mxRecords),
-    hasSpf,
-    hasDmarc,
-    spfRecord,
-    dmarcRecord,
-    resolutionSource,
-    ...(mxRecords.length === 0 && {
+    hasMxRecords: mxResult.mxRecords.length > 0,
+    mxRecords: mxResult.mxRecords,
+    primaryMx: mxResult.mxRecords[0]?.exchange || null,
+    mailProvider: identifyMailProvider(mxResult.mxRecords),
+    hasSpf: spfResult.hasSpf,
+    hasDmarc: dmarcResult.hasDmarc,
+    spfRecord: spfResult.spfRecord,
+    dmarcRecord: dmarcResult.dmarcRecord,
+    resolutionSource: mxResult.source,
+    ...(mxResult.mxRecords.length === 0 && {
       error: `No valid mail exchange (MX) records found for domain '${cleanDomain}'.`
     })
   };
 
-  // Cache DNS result
+  // Cache result for 2 hours
   dnsCache.set(cleanDomain, {
     data: result,
     expiresAt: Date.now() + config.cache.mxRecordTtlMs

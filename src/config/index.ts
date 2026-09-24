@@ -38,17 +38,17 @@ export const config = {
   masterApiKey: process.env.MASTER_API_KEY || process.env.API_KEY || '',
   projectKeys: parseProjectKeys(process.env.PROJECT_KEYS || process.env.API_CLIENTS || ''),
   
-  // SMTP Configuration for Handshake
+  // SMTP Configuration for Handshake (Optimized for ultra-fast probing)
   smtp: {
     heloDomain: process.env.SMTP_HELO_DOMAIN || 'mail.validator.local',
     mailFrom: process.env.SMTP_MAIL_FROM || 'verify@validator.local',
-    timeoutMs: parseInt(process.env.SMTP_TIMEOUT_MS || '7000', 10),
+    timeoutMs: parseInt(process.env.SMTP_TIMEOUT_MS || '2000', 10), // 2.0s max
     port: parseInt(process.env.SMTP_PORT || '25', 10)
   },
 
-  // DNS Configuration
+  // DNS Configuration (Fast DoH resolution)
   dns: {
-    timeoutMs: parseInt(process.env.DNS_TIMEOUT_MS || '3500', 10),
+    timeoutMs: parseInt(process.env.DNS_TIMEOUT_MS || '1500', 10), // 1.5s max
     servers: ['8.8.8.8', '1.1.1.1', '9.9.9.9', '208.67.222.222']
   },
 
